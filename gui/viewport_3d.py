@@ -112,4 +112,18 @@ class Viewport3D(QOpenGLWidget):
         self.zoom -= delta * 0.5
         self.zoom = max(1.0, min(self.zoom, 50.0))
         self.update()
-
+    
+    def cleanup(self):
+        if hasattr(self, 'vis') and self.vis is not None:
+            try:
+                self.vis.destroy_window()
+            except:
+                pass
+            self.vis = None
+    
+    def closeEvent(self, event):
+        self.cleanup()
+        super().closeEvent(event)
+    
+    def __del__(self):
+        self.cleanup()
