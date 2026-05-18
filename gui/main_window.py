@@ -25,28 +25,21 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.video_processor = None
         self.current_model = None
+        self._original_model = None
         self.detections = []
         self.segments = []
         self.material_editor = MaterialEditor()
         self.lighting_system = LightingSystem()
 
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.instance_detector = InstanceDetector(device=device)
+        self.instance_segmentor = InstanceSegmentor(device=device)
+
         checkpoint_path = Path('data/checkpoints/segmentation_model_final.pth')
-        det_model_path = str(checkpoint_path) if checkpoint_path.exists() else None
-        seg_model_path = str(checkpoint_path) if checkpoint_path.exists() else None
-
-        self.instance_detector = InstanceDetector(
-            model_path=det_model_path,
-            device='cuda' if torch.cuda.is_available() else 'cpu'
-        )
-        self.instance_segmentor = InstanceSegmentor(
-            model_path=seg_model_path,
-            device='cuda' if torch.cuda.is_available() else 'cpu'
-        )
-
         if checkpoint_path.exists():
-            app_logger.info(f'Loaded trained weights from {checkpoint_path}')
+            self._load_segmentation_weights(checkpoint_path)
         else:
-            app_logger.info('No checkpoint found, using initialized weights')
+            app_logger.info('No segmentation checkpoint found')
 
         self.fps_timer = QTimer()
         self.fps_timer.timeout.connect(self._update_fps)
@@ -71,15 +64,21 @@ class MainWindow(QMainWindow):
 
         left_splitter = QSplitter(Qt.Vertical)
         self.video_panel = VideoPanel()
+        self.video_panel.setMinimumHeight(180)
         self.scene_tree = SceneTree()
+        self.scene_tree.setMinimumHeight(80)
         left_splitter.addWidget(self.video_panel)
         left_splitter.addWidget(self.scene_tree)
+        left_splitter.setCollapsible(0, False)
+        left_splitter.setCollapsible(1, False)
 
         self.viewport = Viewport3D()
 
         right_splitter = QSplitter(Qt.Vertical)
         self.control_panel = ControlPanel()
+        self.control_panel.setMinimumWidth(200)
         right_splitter.addWidget(self.control_panel)
+        right_splitter.setCollapsible(0, False)
 
         main_splitter = QSplitter(Qt.Horizontal)
         main_splitter.addWidget(left_splitter)
@@ -88,6 +87,10 @@ class MainWindow(QMainWindow):
         main_splitter.setStretchFactor(0, 2)
         main_splitter.setStretchFactor(1, 5)
         main_splitter.setStretchFactor(2, 2)
+        main_splitter.setCollapsible(0, False)
+        main_splitter.setCollapsible(1, False)
+        main_splitter.setCollapsible(2, False)
+        main_splitter.setSizes([260, 600, 260])
 
         main_layout.addWidget(main_splitter)
         central_widget.setLayout(main_layout)
@@ -123,6 +126,12 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        edit_menu = menubar.addMenu('&Edit')
+        clear_action = QAction('&Clear Scene', self)
+        clear_action.setShortcut('Ctrl+Shift+C')
+        clear_action.triggered.connect(self.clear_all_models)
+        edit_menu.addAction(clear_action)
+
         tools_menu = menubar.addMenu('&Tools')
         detect_action = QAction('Instance &Detection', self)
         detect_action.setShortcut('Ctrl+D')
@@ -153,6 +162,7 @@ class MainWindow(QMainWindow):
         self.control_panel.segment_objects_clicked.connect(self.run_instance_segmentation)
         self.control_panel.reconstruct_3d_clicked.connect(self.run_reconstruction)
         self.control_panel.video_render_clicked.connect(self.run_render_view)
+        self.control_panel.clear_models_clicked.connect(self.clear_all_models)
         self.scene_tree.item_selected.connect(self.on_scene_item_selected)
 
     def on_video_loaded(self, processor):
@@ -182,6 +192,7 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
                 model = ModelIO.import_model(file_path)
                 self.current_model = model
+                self._original_model = model
                 self.viewport.add_model(model)
                 self.status_label.setText(f'Model imported')
                 self.operation_label.setText(f'| Operation: Model imported ({file_path})')
@@ -437,28 +448,70 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, 'Error', f'Render failed: {str(e)}')
 
     def on_material_changed(self, material):
-        if self.current_model is not None and hasattr(self.current_model, 'vertices'):
-            try:
-                self.operation_label.setText(f'| Operation: Applying {material}...')
-                QApplication.processEvents()
-                self.current_model = self.material_editor.apply_material(self.current_model, material)
-                self.viewport.update()
-                self.operation_label.setText(f'| Operation: Material {material} applied')
-                self.status_label.setText(f'Material: {material}')
-                app_logger.info(f'Material applied: {material}')
-            except Exception as e:
-                app_logger.error(f'Failed to apply material: {e}')
+        if self.current_model is None:
+            return
+        try:
+            import trimesh
+            self.operation_label.setText(f'| Operation: Applying {material}...')
+            QApplication.processEvents()
+
+            source = self._original_model or self.current_model
+            if isinstance(source, trimesh.Trimesh):
+                new_model = self.material_editor.apply_material(source, material)
+            elif hasattr(source, 'vertices') and hasattr(source, 'faces'):
+                new_model = self.material_editor.apply_material(source, material)
+            else:
+                self.operation_label.setText('| Operation: Material only for mesh models')
+                return
+
+            self.current_model = new_model
+            self.viewport.clear_models()
+            self.viewport.add_model(new_model)
+            self.operation_label.setText(f'| Operation: Material {material} applied')
+            self.status_label.setText(f'Material: {material}')
+            app_logger.info(f'Material applied: {material}')
+        except Exception as e:
+            app_logger.error(f'Failed to apply material: {e}')
+            QMessageBox.warning(self, 'Material', f'Failed: {str(e)}')
 
     def on_light_changed(self):
         light_type = self.control_panel.get_light_type()
         intensity = self.control_panel.get_light_intensity()
         self.lighting_system.set_ambient_light((intensity, intensity, intensity), intensity)
+        self.viewport.apply_lighting(light_type, intensity)
         self.viewport.update()
         self.status_label.setText(f'Lighting: {light_type} ({int(intensity*100)}%)')
 
     def on_scene_item_selected(self, data):
         if data is not None:
             self.operation_label.setText(f'| Operation: Object selected')
+
+    def clear_all_models(self):
+        self.current_model = None
+        self._original_model = None
+        self.detections = []
+        self.segments = []
+        self.viewport.clear_models()
+        self.scene_tree.clear()
+        self.status_label.setText('Scene cleared')
+        self.operation_label.setText('| Operation: All models removed')
+        app_logger.info('Scene cleared')
+
+    def _load_segmentation_weights(self, checkpoint_path):
+        try:
+            from models.segmentation_model import SegmentationModel
+            self.seg_model = SegmentationModel(
+                num_classes=self.instance_detector.num_classes,
+                in_channels=6
+            ).to(self.instance_detector.device)
+            self.seg_model.eval()
+            checkpoint = torch.load(checkpoint_path, map_location=self.instance_detector.device)
+            self.seg_model.load_state_dict(checkpoint['model_state_dict'])
+            app_logger.info(f'Segmentation model loaded from {checkpoint_path} '
+                            f'(epoch {checkpoint.get("epoch", "?")})')
+        except Exception as e:
+            app_logger.warning(f'Could not load segmentation weights: {e}')
+            self.seg_model = None
 
     def _update_fps(self):
         elapsed = self._fps_elapsed.elapsed()

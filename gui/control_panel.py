@@ -14,6 +14,7 @@ class ControlPanel(QWidget):
     segment_objects_clicked = pyqtSignal()
     reconstruct_3d_clicked = pyqtSignal()
     video_render_clicked = pyqtSignal()
+    clear_models_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,6 +52,11 @@ class ControlPanel(QWidget):
         self.export_btn.setToolTip('Export current model to file')
         self.export_btn.clicked.connect(self.export_model_clicked.emit)
         io_layout.addWidget(self.export_btn)
+        self.clear_models_btn = QPushButton('Clear All Models')
+        self.clear_models_btn.setToolTip('Remove all loaded models from the scene')
+        self.clear_models_btn.setStyleSheet('QPushButton { color: #cc4444; }')
+        self.clear_models_btn.clicked.connect(self.clear_models_clicked.emit)
+        io_layout.addWidget(self.clear_models_btn)
         io_group.setLayout(io_layout)
         layout.addWidget(io_group)
 

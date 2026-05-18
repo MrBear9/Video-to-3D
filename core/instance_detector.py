@@ -150,7 +150,7 @@ class InstanceDetector:
         
         points = self._preprocess_points(points)
         
-        batch_tensor = torch.from_numpy(points).float().unsqueeze(0).to(self.device)
+        batch_tensor = torch.from_numpy(points).float().to(self.device)
         
         with torch.no_grad():
             outputs = self.model(batch_tensor)
