@@ -1,3 +1,10 @@
+'''
+@File    :   train.py
+@Time    :   2026/05/30 17:12:39
+@Author  :   Mr.Bear9 
+@Github  :   https://github.com/MrBear9
+'''
+
 from training.train_segmentation import SegmentationTrainer, SegmentationDataset
 import torch
 from pathlib import Path
@@ -13,7 +20,7 @@ def main():
         'num_classes': 13,
         'in_channels': 6,
         'batch_size': 4,
-        'num_epochs': 10,
+        'num_epochs': 100,
         'learning_rate': 0.001
     }
 

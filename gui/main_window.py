@@ -29,6 +29,7 @@ class MainWindow(QMainWindow):
         self.current_model = None
         self._original_model = None
         self.selected_scene_object = None
+        self.current_video_path = None
         self.detections = []
         self.segments = []
         self.material_editor = MaterialEditor()
@@ -171,6 +172,7 @@ class MainWindow(QMainWindow):
 
     def on_video_loaded(self, processor):
         self.video_processor = processor
+        self.current_video_path = Path(processor.video_path)
         info = processor.get_video_info()
         self.status_label.setText(f'Video loaded: {info["resolution"][0]}x{info["resolution"][1]}')
         self.operation_label.setText(f'| Operation: Video loaded ({info["frame_count"]} frames)')
@@ -238,20 +240,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, 'Warning', 'Please import a 3D model first')
             return
         try:
-            import trimesh
             self.operation_label.setText('| Operation: Detecting objects...')
             self.control_panel.show_progress(True)
             QApplication.processEvents()
 
             self.control_panel.update_progress(30)
-            if isinstance(self.current_model, trimesh.Trimesh):
-                points, _ = trimesh.sample.sample_surface(self.current_model, 20000)
-            else:
-                import open3d as o3d
-                if isinstance(self.current_model, o3d.geometry.PointCloud):
-                    points = np.asarray(self.current_model.points)
-                else:
-                    points = np.random.randn(2048, 3).astype(np.float32)
+            points = self._points_for_analysis(self.current_model)
 
             self.control_panel.update_progress(60)
             self.detections = self.instance_detector.detect(points)
@@ -260,6 +254,7 @@ class MainWindow(QMainWindow):
             self.scene_tree.clear()
             self.selected_scene_object = None
             self.viewport.select_object(None)
+            self.scene_tree.add_item('Reconstructed_Scene', 'mesh', self.current_model)
             for i, det in enumerate(self.detections):
                 self.scene_tree.add_item(
                     f'{det.class_name}_{i}',
@@ -288,26 +283,30 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
 
             self.control_panel.update_progress(20)
-            if isinstance(self.current_model, o3d.geometry.PointCloud):
-                points = self.current_model
+            s3dis_segments = self._load_s3dis_segments_for_current_video()
+            if s3dis_segments:
+                self.segments = s3dis_segments
+                self.control_panel.update_progress(100)
             else:
-                import trimesh
-                pts, _ = trimesh.sample.sample_surface(self.current_model, 20000)
-                points = pts
+                if isinstance(self.current_model, o3d.geometry.PointCloud):
+                    points = self.current_model
+                else:
+                    points = self._points_for_analysis(self.current_model)
 
-            self.control_panel.update_progress(50)
-            if self.detections:
-                self.segments = self.instance_segmentor.segment_with_detection(points, self.detections)
-            else:
-                self.segments = self.instance_segmentor.segment(points)
+                self.control_panel.update_progress(50)
+                if self.detections:
+                    self.segments = self.instance_segmentor.segment_with_detection(points, self.detections)
+                else:
+                    self.segments = self.instance_segmentor.segment(points)
 
-            self.control_panel.update_progress(80)
-            self.segments = self.instance_segmentor.refine_segmentation(self.segments)
-            self.control_panel.update_progress(100)
+                self.control_panel.update_progress(80)
+                self.segments = self.instance_segmentor.refine_segmentation(self.segments)
+                self.control_panel.update_progress(100)
 
             self.scene_tree.clear()
             self.selected_scene_object = None
             self.viewport.select_object(None)
+            self.scene_tree.add_item('Reconstructed_Scene', 'mesh', self.current_model)
             for i, seg in enumerate(self.segments):
                 label = seg.semantic_label or f'segment_{i}'
                 self.scene_tree.add_item(
@@ -350,12 +349,15 @@ class MainWindow(QMainWindow):
             reconstructor = RGBDTSDFReconstructor()
             result = reconstructor.reconstruct_from_project(str(project_dir))
 
+            self.viewport.clear_models()
+            self.scene_tree.clear()
+            self.detections = []
+            self.segments = []
             self.current_model = result.mesh
             self._original_model = result.mesh
             self.selected_scene_object = None
             self.viewport.select_object(None)
             self.viewport.add_model(result.mesh)
-            self._load_s3dis_scene_objects(str(self.video_processor.video_path))
 
             self.operation_label.setText(
                 f'| Operation: Reconstruction done '
@@ -382,9 +384,12 @@ class MainWindow(QMainWindow):
         if self.current_model is None:
             QMessageBox.warning(self, 'Warning', 'Please reconstruct or import a 3D model first')
             return
-        self.viewport.update()
-        self.operation_label.setText('| Operation: View refreshed')
-        self.status_label.setText('Current TSDF/model view refreshed')
+        self.selected_scene_object = None
+        self.viewport.select_object(None)
+        self.scene_tree.clear_selection()
+        self.viewport.fit_view()
+        self.operation_label.setText('| Operation: View reset')
+        self.status_label.setText('View reset to full scene')
 
     def on_material_changed(self, material):
         if self.current_model is None:
@@ -395,12 +400,12 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
 
             source = self.current_model
-            if self.selected_scene_object is not None and hasattr(source, 'vertices') and hasattr(source, 'faces'):
+            if self.selected_scene_object is not None and self._mesh_vertices(source) is not None:
                 new_model = self._apply_material_to_selected_object(source, self.selected_scene_object, material)
             elif isinstance(source, trimesh.Trimesh):
                 new_model = self.material_editor.apply_material(source, material)
-            elif hasattr(source, 'vertices') and hasattr(source, 'faces'):
-                new_model = self.material_editor.apply_material(source, material)
+            elif self._is_open3d_mesh(source):
+                new_model = self._apply_material_to_entire_open3d_mesh(source, material)
             else:
                 self.operation_label.setText('| Operation: Material only for mesh models')
                 return
@@ -408,9 +413,9 @@ class MainWindow(QMainWindow):
             self.current_model = new_model
             if self._original_model is None:
                 self._original_model = new_model
-            self.viewport.clear_models()
-            self.viewport.add_model(new_model)
+            self.viewport.models = [new_model]
             self.viewport.select_object(self.selected_scene_object)
+            self.viewport.update()
             self.operation_label.setText(f'| Operation: Material {material} applied')
             self.status_label.setText(f'Material: {material}')
             app_logger.info(f'Material applied: {material}')
@@ -427,6 +432,12 @@ class MainWindow(QMainWindow):
         self.status_label.setText(f'Lighting: {light_type} ({int(intensity*100)}%)')
 
     def on_scene_item_selected(self, data):
+        if data is self.selected_scene_object:
+            self.selected_scene_object = None
+            self.viewport.select_object(None)
+            self.scene_tree.clear_selection()
+            self.operation_label.setText('| Operation: Selection cleared')
+            return
         self.selected_scene_object = data
         self.viewport.select_object(data)
         if data is not None:
@@ -484,15 +495,15 @@ class MainWindow(QMainWindow):
             app_logger.warning(f'Could not load segmentation weights: {e}')
             self.seg_model = None
 
-    def _load_s3dis_scene_objects(self, video_path):
-        summary_path = Path('data/output_models') / f'{Path(video_path).stem}_summary.json'
+    def _load_s3dis_segments_for_current_video(self):
+        if self.current_video_path is None:
+            return []
+        summary_path = Path('data/output_models') / f'{self.current_video_path.stem}_summary.json'
         if not summary_path.exists():
-            return
+            return []
         try:
             summary = json.loads(summary_path.read_text(encoding='utf-8'))
-            self.scene_tree.clear()
-            self.scene_tree.add_item('TSDF_Reconstruction', 'mesh', self.current_model)
-            self.segments = []
+            segments = []
             for inst in summary.get('instances', []):
                 ply_path = Path(inst.get('path', ''))
                 if not ply_path.is_absolute():
@@ -511,14 +522,11 @@ class MainWindow(QMainWindow):
                     source_path=str(ply_path),
                     label_id=inst.get('label_id'),
                 )
-                self.segments.append(obj)
-                self.scene_tree.add_item(
-                    f"{obj.semantic_label}_{obj.label_id}",
-                    'S3DIS',
-                    obj
-                )
+                segments.append(obj)
+            return segments
         except Exception as e:
             app_logger.warning(f'Could not load S3DIS scene objects: {e}')
+            return []
 
     def _update_fps(self):
         elapsed = self._fps_elapsed.elapsed()
@@ -555,7 +563,7 @@ class MainWindow(QMainWindow):
         mat = self.material_editor.MATERIALS[material]
         new_mesh = mesh.copy() if hasattr(mesh, 'copy') else mesh
 
-        vertices = np.asarray(new_mesh.vertices)
+        vertices = self._mesh_vertices(new_mesh)
         if len(vertices) == 0:
             return new_mesh
 
@@ -580,7 +588,30 @@ class MainWindow(QMainWindow):
         colors = self._mesh_vertex_colors(new_mesh, len(vertices))
         colors[mask, :3] = np.array(mat.albedo) * 255
         colors[mask, 3] = int((1.0 - mat.transparency) * 255)
-        new_mesh.visual.vertex_colors = colors.astype(np.uint8)
+        self._set_mesh_vertex_colors(new_mesh, colors)
+        return new_mesh
+
+    def _apply_material_to_entire_open3d_mesh(self, mesh, material):
+        mat = self.material_editor.MATERIALS[material]
+        new_mesh = self._copy_open3d_mesh(mesh)
+        vertices = self._mesh_vertices(new_mesh)
+        if vertices is None or len(vertices) == 0:
+            return new_mesh
+        colors = np.ones((len(vertices), 4), dtype=np.uint8) * 255
+        colors[:, :3] = (np.array(mat.albedo) * 255).astype(np.uint8)
+        colors[:, 3] = int((1.0 - mat.transparency) * 255)
+        self._set_mesh_vertex_colors(new_mesh, colors)
+        return new_mesh
+
+    def _copy_open3d_mesh(self, mesh):
+        import open3d as o3d
+        new_mesh = o3d.geometry.TriangleMesh()
+        new_mesh.vertices = o3d.utility.Vector3dVector(np.asarray(mesh.vertices))
+        new_mesh.triangles = o3d.utility.Vector3iVector(np.asarray(mesh.triangles))
+        if mesh.has_vertex_colors():
+            new_mesh.vertex_colors = o3d.utility.Vector3dVector(np.asarray(mesh.vertex_colors))
+        if mesh.has_vertex_normals():
+            new_mesh.vertex_normals = o3d.utility.Vector3dVector(np.asarray(mesh.vertex_normals))
         return new_mesh
 
     def _selection_points(self, selection):
@@ -593,6 +624,18 @@ class MainWindow(QMainWindow):
         return None
 
     def _mesh_vertex_colors(self, mesh, count):
+        if self._is_open3d_mesh(mesh):
+            colors = np.asarray(mesh.vertex_colors) if mesh.has_vertex_colors() else None
+            if colors is None or len(colors) != count:
+                colors = np.ones((count, 4), dtype=np.uint8) * 180
+                colors[:, 3] = 255
+            else:
+                colors = np.clip(colors * 255, 0, 255).astype(np.uint8)
+                if colors.shape[1] == 3:
+                    alpha = np.full((count, 1), 255, dtype=np.uint8)
+                    colors = np.hstack([colors, alpha])
+            return colors.copy()
+
         colors = None
         if hasattr(mesh, 'visual') and hasattr(mesh.visual, 'vertex_colors'):
             colors = np.asarray(mesh.visual.vertex_colors)
@@ -603,6 +646,50 @@ class MainWindow(QMainWindow):
             alpha = np.full((count, 1), 255, dtype=colors.dtype)
             colors = np.hstack([colors, alpha])
         return colors.copy()
+
+    def _set_mesh_vertex_colors(self, mesh, colors):
+        if self._is_open3d_mesh(mesh):
+            import open3d as o3d
+            mesh.vertex_colors = o3d.utility.Vector3dVector(colors[:, :3].astype(np.float64) / 255.0)
+        elif hasattr(mesh, 'visual'):
+            mesh.visual.vertex_colors = colors.astype(np.uint8)
+
+    def _is_open3d_mesh(self, model):
+        try:
+            import open3d as o3d
+            return isinstance(model, o3d.geometry.TriangleMesh)
+        except Exception:
+            return False
+
+    def _mesh_vertices(self, model):
+        if self._is_open3d_mesh(model):
+            return np.asarray(model.vertices)
+        if hasattr(model, 'vertices'):
+            return np.asarray(model.vertices)
+        return None
+
+    def _points_for_analysis(self, model, sample_count=20000):
+        try:
+            import open3d as o3d
+            if isinstance(model, o3d.geometry.PointCloud):
+                return np.asarray(model.points)
+            if isinstance(model, o3d.geometry.TriangleMesh):
+                pcd = model.sample_points_uniformly(number_of_points=sample_count)
+                return np.asarray(pcd.points)
+        except Exception:
+            pass
+        try:
+            import trimesh
+            if isinstance(model, trimesh.Trimesh):
+                points, _ = trimesh.sample.sample_surface(model, sample_count)
+                return points
+        except Exception:
+            pass
+        if hasattr(model, 'points'):
+            return np.asarray(model.points)
+        if hasattr(model, 'vertices'):
+            return np.asarray(model.vertices)
+        return np.random.randn(2048, 3).astype(np.float32)
 
     def _remove_selection_from_model(self, model, selection):
         points = self._selection_points(selection)

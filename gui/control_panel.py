@@ -37,7 +37,7 @@ class ControlPanel(QWidget):
         self.reconstruct_btn.clicked.connect(self.reconstruct_3d_clicked.emit)
         video_layout.addWidget(self.reconstruct_btn)
         self.render_view_btn = QPushButton('Render View')
-        self.render_view_btn.setToolTip('Render a novel view from reconstructed model')
+        self.render_view_btn.setToolTip('Reset camera to show the full scene')
         self.render_view_btn.clicked.connect(self.video_render_clicked.emit)
         video_layout.addWidget(self.render_view_btn)
         video_group.setLayout(video_layout)
@@ -169,6 +169,7 @@ class SceneTree(QWidget):
         item.setData(0, Qt.UserRole, data)
         self.tree.addTopLevelItem(item)
         self.tree.expandAll()
+        return item
 
     def clear(self):
         self.tree.clear()
@@ -176,6 +177,9 @@ class SceneTree(QWidget):
     def on_item_clicked(self, item, column):
         data = item.data(0, Qt.UserRole)
         self.item_selected.emit(data)
+
+    def clear_selection(self):
+        self.tree.clearSelection()
 
     def open_context_menu(self, pos):
         item = self.tree.itemAt(pos)

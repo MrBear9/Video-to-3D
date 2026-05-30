@@ -1,3 +1,11 @@
+'''
+@File    :   train_segmentation.py
+@Time    :   2026/05/30 17:13:07
+@Author  :   Mr.Bear9 
+@Github  :   https://github.com/MrBear9
+'''
+
+
 import torch
 import torch.nn as nn
 import torch.optim as optim

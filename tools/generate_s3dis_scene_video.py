@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import shutil
 
 import cv2
 import numpy as np
@@ -56,7 +57,8 @@ def look_at(eye, target, up=np.array([0.0, 0.0, 1.0], dtype=np.float32)):
     right = np.cross(forward, up)
     right = right / (np.linalg.norm(right) + 1e-8)
     true_up = np.cross(right, forward)
-    return np.stack([right, true_up, forward], axis=0)
+    down = -true_up
+    return np.stack([right, down, forward], axis=0)
 
 
 def find_default_scene(processed_root=ROOT / "data" / "datasets" / "S3DIS" / "processed"):
@@ -110,10 +112,13 @@ def render_frame(xyz, rgb, eye, target, size=720, focal=650.0, return_depth=Fals
     cam = cam[valid]
     colors = rgb[valid]
     if len(cam) == 0:
-        return np.full((size, size, 3), 245, dtype=np.uint8)
+        image = np.full((size, size, 3), 245, dtype=np.uint8)
+        if return_depth:
+            return image, np.zeros((size, size), dtype=np.float32), R
+        return image
 
     u = (cam[:, 0] / cam[:, 2] * focal + size / 2).astype(np.int32)
-    v = (-cam[:, 1] / cam[:, 2] * focal + size / 2).astype(np.int32)
+    v = (cam[:, 1] / cam[:, 2] * focal + size / 2).astype(np.int32)
     valid2 = (u >= 0) & (u < size) & (v >= 0) & (v < size)
     u, v, z, colors = u[valid2], v[valid2], cam[:, 2][valid2], colors[valid2]
 
@@ -224,7 +229,10 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     video_path.parent.mkdir(parents=True, exist_ok=True)
     for sub in ("color", "depth", "pose"):
-        (rgbd_dir / sub).mkdir(parents=True, exist_ok=True)
+        sub_dir = rgbd_dir / sub
+        if sub_dir.exists():
+            shutil.rmtree(sub_dir)
+        sub_dir.mkdir(parents=True, exist_ok=True)
 
     xyz, rgb, labels = load_scene(scene_path)
     label_rgb = LABEL_COLORS[np.clip(labels, 0, len(LABEL_COLORS) - 1)]

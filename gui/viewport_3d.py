@@ -273,6 +273,17 @@ class Viewport3D(QOpenGLWidget):
             self.selected_object = None
         self.update()
 
+    def fit_view(self):
+        if not self.models:
+            return
+        self.selected_object = None
+        self.pan_x = 0.0
+        self.pan_y = 0.0
+        self.rotation_x = 0.0
+        self.rotation_y = 0.0
+        self._fit_view_to_model(self.models[-1])
+        self.update()
+
     def _fit_view_to_model(self, model):
         try:
             import trimesh

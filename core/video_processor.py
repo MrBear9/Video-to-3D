@@ -1,3 +1,10 @@
+'''
+@File    :   video_processor.py
+@Time    :   2026/05/30 17:14:03
+@Author  :   Mr.Bear9 
+@Github  :   https://github.com/MrBear9
+'''
+
 
 import cv2
 import numpy as np
