@@ -96,7 +96,7 @@ class SegmentationTrainer:
         self.train_accuracies = []
         self.val_accuracies = []
 
-    def prepare_dataset(self, dataset_name: str = 'scannet', data_path: str = None):
+    def prepare_dataset(self, dataset_name: str = 'S3DIS/processed', data_path: str = None):
         if data_path is None:
             data_path = Path(__file__).parent.parent / 'data' / 'datasets' / dataset_name
 

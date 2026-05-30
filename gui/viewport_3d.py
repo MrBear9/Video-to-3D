@@ -19,6 +19,7 @@ class Viewport3D(QOpenGLWidget):
         self.pan_y = 0.0
         self.last_mouse_pos = None
         self._mouse_action = None
+        self.selected_object = None
         self.setMinimumSize(400, 400)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -65,8 +66,11 @@ class Viewport3D(QOpenGLWidget):
     def draw_model(self, model):
         if isinstance(model, o3d.geometry.PointCloud):
             self.draw_point_cloud(model)
+        elif hasattr(model, 'points') and not hasattr(model, 'faces'):
+            self.draw_simple_point_cloud(model)
         elif hasattr(model, 'vertices') and hasattr(model, 'faces'):
             self.draw_mesh(model)
+        self.draw_selection_overlay(model)
 
     def draw_point_cloud(self, pcd):
         points = np.asarray(pcd.points)
@@ -81,9 +85,27 @@ class Viewport3D(QOpenGLWidget):
         gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
         gl.glDisableClientState(gl.GL_COLOR_ARRAY)
 
+    def draw_simple_point_cloud(self, pcd):
+        points = np.asarray(pcd.points)
+        colors = np.asarray(pcd.colors) if hasattr(pcd, 'colors') else np.ones_like(points) * 0.7
+
+        gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glEnableClientState(gl.GL_COLOR_ARRAY)
+        gl.glVertexPointer(3, gl.GL_FLOAT, 0, points.astype(np.float32))
+        gl.glColorPointer(3, gl.GL_FLOAT, 0, colors.astype(np.float32))
+        gl.glPointSize(2.5)
+        gl.glDrawArrays(gl.GL_POINTS, 0, len(points))
+        gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+
     def draw_mesh(self, mesh):
-        import trimesh
-        if isinstance(mesh, trimesh.Trimesh):
+        try:
+            import trimesh
+            is_trimesh = isinstance(mesh, trimesh.Trimesh)
+        except ImportError:
+            is_trimesh = False
+
+        if is_trimesh or (hasattr(mesh, 'vertices') and hasattr(mesh, 'faces') and not isinstance(mesh, o3d.geometry.TriangleMesh)):
             vertices = mesh.vertices
             faces = mesh.faces
 
@@ -124,6 +146,71 @@ class Viewport3D(QOpenGLWidget):
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, vertex_array.shape[0])
             gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
             gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+
+    def draw_selection_overlay(self, model):
+        if self.selected_object is None:
+            return
+
+        points = self._selection_points(self.selected_object)
+        if points is None or len(points) == 0:
+            return
+
+        bbox = self._bbox_from_points(points)
+        self._draw_bbox(bbox, color=(1.0, 0.85, 0.15), line_width=3.0)
+
+        if points.shape[0] > 8000:
+            idx = np.linspace(0, points.shape[0] - 1, 8000).astype(np.int64)
+            points = points[idx]
+
+        gl.glDisable(gl.GL_LIGHTING)
+        gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glVertexPointer(3, gl.GL_FLOAT, 0, points.astype(np.float32))
+        gl.glColor3f(1.0, 0.92, 0.05)
+        gl.glPointSize(5.0)
+        gl.glDrawArrays(gl.GL_POINTS, 0, len(points))
+        gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glPointSize(2.0)
+        gl.glEnable(gl.GL_LIGHTING)
+
+    def _selection_points(self, data):
+        if hasattr(data, 'points'):
+            return np.asarray(data.points, dtype=np.float32)
+        if hasattr(data, 'bbox'):
+            return np.asarray(data.bbox, dtype=np.float32)
+        if hasattr(data, 'vertices'):
+            return np.asarray(data.vertices, dtype=np.float32)
+        return None
+
+    def _bbox_from_points(self, points):
+        min_coords = points.min(axis=0)
+        max_coords = points.max(axis=0)
+        return np.array([
+            [min_coords[0], min_coords[1], min_coords[2]],
+            [max_coords[0], min_coords[1], min_coords[2]],
+            [max_coords[0], max_coords[1], min_coords[2]],
+            [min_coords[0], max_coords[1], min_coords[2]],
+            [min_coords[0], min_coords[1], max_coords[2]],
+            [max_coords[0], min_coords[1], max_coords[2]],
+            [max_coords[0], max_coords[1], max_coords[2]],
+            [min_coords[0], max_coords[1], max_coords[2]],
+        ], dtype=np.float32)
+
+    def _draw_bbox(self, bbox, color=(1.0, 0.85, 0.15), line_width=2.5):
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        gl.glDisable(gl.GL_LIGHTING)
+        gl.glColor3f(*color)
+        gl.glLineWidth(line_width)
+        gl.glBegin(gl.GL_LINES)
+        for a, b in edges:
+            gl.glVertex3f(*bbox[a])
+            gl.glVertex3f(*bbox[b])
+        gl.glEnd()
+        gl.glLineWidth(1.0)
+        gl.glEnable(gl.GL_LIGHTING)
 
     def draw_axes(self):
         size = min(self.width(), self.height()) * 0.12
@@ -176,11 +263,28 @@ class Viewport3D(QOpenGLWidget):
         self.model_loaded.emit(model)
         self.update()
 
+    def select_object(self, data):
+        self.selected_object = data
+        self.update()
+
+    def remove_model(self, model):
+        self.models = [m for m in self.models if m is not model]
+        if self.selected_object is model:
+            self.selected_object = None
+        self.update()
+
     def _fit_view_to_model(self, model):
-        import trimesh
-        if isinstance(model, trimesh.Trimesh):
+        try:
+            import trimesh
+            is_trimesh = isinstance(model, trimesh.Trimesh)
+        except ImportError:
+            is_trimesh = False
+
+        if is_trimesh or (hasattr(model, 'vertices') and hasattr(model, 'faces') and not isinstance(model, o3d.geometry.TriangleMesh)):
             pts = model.vertices
         elif isinstance(model, o3d.geometry.PointCloud):
+            pts = np.asarray(model.points)
+        elif hasattr(model, 'points'):
             pts = np.asarray(model.points)
         elif isinstance(model, o3d.geometry.TriangleMesh):
             pts = np.asarray(model.vertices)
@@ -201,6 +305,7 @@ class Viewport3D(QOpenGLWidget):
 
     def clear_models(self):
         self.models = []
+        self.selected_object = None
         self.rotation_x = 0.0
         self.rotation_y = 0.0
         self.zoom = 5.0

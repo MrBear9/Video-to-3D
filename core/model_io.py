@@ -46,9 +46,18 @@ class ModelIO:
             if isinstance(model, trimesh.Trimesh):
                 model.export(str(path_obj))
                 return True
+            elif isinstance(model, o3d.geometry.TriangleMesh):
+                return bool(o3d.io.write_triangle_mesh(str(path_obj), model))
             elif isinstance(model, o3d.geometry.PointCloud):
                 o3d.io.write_point_cloud(str(path_obj), model)
                 return True
+            elif hasattr(model, 'points') and hasattr(model, 'colors'):
+                points = np.asarray(model.points)
+                colors = np.asarray(model.colors)
+                if path_obj.suffix.lower() == '.ply':
+                    ModelIO._write_simple_point_cloud_ply(path_obj, points, colors)
+                    return True
+                raise TypeError('Simple point clouds can currently be exported as PLY')
             else:
                 raise TypeError(f"Unsupported model type: {type(model)}")
         except Exception as e:
@@ -82,8 +91,37 @@ class ModelIO:
                 info['bounds'] = np.array([points.min(axis=0), points.max(axis=0)])
             info['has_colors'] = model.has_colors()
             info['has_normals'] = model.has_normals()
+        elif isinstance(model, o3d.geometry.TriangleMesh):
+            vertices = np.asarray(model.vertices)
+            info['type'] = 'mesh'
+            info['vertices'] = len(vertices)
+            info['faces'] = len(np.asarray(model.triangles))
+            if len(vertices) > 0:
+                info['bounds'] = np.array([vertices.min(axis=0), vertices.max(axis=0)])
+            info['has_colors'] = model.has_vertex_colors()
+            info['has_normals'] = model.has_vertex_normals()
+        elif hasattr(model, 'points'):
+            points = np.asarray(model.points)
+            info['type'] = 'point_cloud'
+            info['points'] = len(points)
+            if len(points) > 0:
+                info['bounds'] = np.array([points.min(axis=0), points.max(axis=0)])
+            info['has_colors'] = hasattr(model, 'colors')
+            info['has_normals'] = False
         else:
             info['type'] = 'unknown'
         
         return info
 
+    @staticmethod
+    def _write_simple_point_cloud_ply(path_obj: Path, points: np.ndarray, colors: np.ndarray):
+        colors = np.clip(colors, 0, 1)
+        rgb = (colors * 255).astype(np.uint8)
+        with path_obj.open('w', encoding='ascii') as f:
+            f.write('ply\nformat ascii 1.0\n')
+            f.write(f'element vertex {len(points)}\n')
+            f.write('property float x\nproperty float y\nproperty float z\n')
+            f.write('property uchar red\nproperty uchar green\nproperty uchar blue\n')
+            f.write('end_header\n')
+            for p, c in zip(points, rgb):
+                f.write(f'{p[0]:.6f} {p[1]:.6f} {p[2]:.6f} {c[0]} {c[1]} {c[2]}\n')

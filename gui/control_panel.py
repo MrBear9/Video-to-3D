@@ -1,6 +1,7 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QPushButton, QGroupBox,
                              QComboBox, QLabel, QSlider, QFileDialog, QTreeWidget,
-                             QTreeWidgetItem, QSplitter, QProgressBar, QScrollArea)
+                             QTreeWidgetItem, QSplitter, QProgressBar, QScrollArea,
+                             QMenu)
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 import numpy as np
 
@@ -141,6 +142,7 @@ class ControlPanel(QWidget):
 
 class SceneTree(QWidget):
     item_selected = pyqtSignal(object)
+    item_delete_requested = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -155,11 +157,13 @@ class SceneTree(QWidget):
         self.tree.setHeaderLabels(['Type', 'Name'])
         self.tree.setColumnWidth(0, 60)
         self.tree.itemClicked.connect(self.on_item_clicked)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self.open_context_menu)
         layout.addWidget(self.tree)
         self.setLayout(layout)
 
     def add_item(self, name, obj_type='Object', data=None):
-        item = QTreeWidgetItem(self.tree)
+        item = QTreeWidgetItem()
         item.setText(0, obj_type)
         item.setText(1, name)
         item.setData(0, Qt.UserRole, data)
@@ -172,3 +176,17 @@ class SceneTree(QWidget):
     def on_item_clicked(self, item, column):
         data = item.data(0, Qt.UserRole)
         self.item_selected.emit(data)
+
+    def open_context_menu(self, pos):
+        item = self.tree.itemAt(pos)
+        if item is None:
+            return
+        menu = QMenu(self)
+        delete_action = menu.addAction('Delete Object')
+        action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
+        if action == delete_action:
+            data = item.data(0, Qt.UserRole)
+            index = self.tree.indexOfTopLevelItem(item)
+            if index >= 0:
+                self.tree.takeTopLevelItem(index)
+            self.item_delete_requested.emit(data)

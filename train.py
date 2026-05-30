@@ -23,7 +23,7 @@ def main():
     print()
 
     dataset = SegmentationDataset(
-        data_path='./data/datasets/scannet',
+        data_path='./data/datasets/S3DIS/processed',
         split='train',
         num_points=2048
     )
