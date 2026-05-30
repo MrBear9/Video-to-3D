@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 
 from core.model_io import ModelIO
 from core.rgbd_tsdf_reconstructor import RGBDTSDFReconstructor, write_depth_png
+from config import Config
 
 
 S3DIS_LABELS = {
@@ -85,7 +86,8 @@ def find_default_scene(processed_root=ROOT / "data" / "datasets" / "S3DIS" / "pr
     return max(candidates, key=lambda item: item[0])[1]
 
 
-def load_scene(path, max_points=180000):
+def load_scene(path, max_points=None):
+    max_points = Config.GENERATED_SCENE_MAX_POINTS if max_points is None else max_points
     data = np.load(path, allow_pickle=True).item()
     points6 = data["points"].astype(np.float32)
     labels = data["labels"].astype(np.int64)
@@ -148,6 +150,30 @@ def make_camera_path(xyz, frames=144):
     direction = hi - lo
     direction = direction / (np.linalg.norm(direction) + 1e-8)
     side_dir = np.array([-direction[1], direction[0]], dtype=np.float32)
+
+    if Config.GENERATED_CAMERA_PATH_MODE == "coverage":
+        path = []
+        segments = [
+            (-0.48, 0.08, 0.92),
+            (0.48, 0.92, 0.08),
+            (0.00, 0.04, 0.96),
+        ]
+        frames_per_segment = [frames // 3, frames // 3, frames - 2 * (frames // 3)]
+        for (lateral_base, start_t, end_t), seg_frames in zip(segments, frames_per_segment):
+            for i in range(max(seg_frames, 1)):
+                t = i / max(seg_frames - 1, 1)
+                smooth = t * t * (3.0 - 2.0 * t)
+                path_t = start_t * (1 - smooth) + end_t * smooth
+                xy_pos = lo * (1 - path_t) + hi * path_t
+                lateral = lateral_base + np.sin(t * np.pi) * 0.12
+                eye_xy = xy_pos + side_dir * lateral
+                look_t = np.clip(path_t + (0.16 if end_t >= start_t else -0.16), 0.0, 1.0)
+                target_xy = lo * (1 - look_t) + hi * look_t - side_dir * lateral_base * 0.35
+                eye = np.array([eye_xy[0], eye_xy[1], z_eye], dtype=np.float32)
+                target = np.array([target_xy[0], target_xy[1], z_mid - 0.18], dtype=np.float32)
+                path.append((eye, target))
+        return path[:frames]
+
     path = []
     for i in range(frames):
         t = i / max(frames - 1, 1)
@@ -210,8 +236,8 @@ def main():
         help="Processed S3DIS .npy file, or 'auto' to choose a rich test/val/train room",
     )
     parser.add_argument("--name", default=None)
-    parser.add_argument("--frames", type=int, default=144)
-    parser.add_argument("--size", type=int, default=720)
+    parser.add_argument("--frames", type=int, default=Config.GENERATED_VIDEO_FRAMES)
+    parser.add_argument("--size", type=int, default=Config.GENERATED_VIDEO_SIZE)
     parser.add_argument("--reconstruct", action="store_true")
     args = parser.parse_args()
 

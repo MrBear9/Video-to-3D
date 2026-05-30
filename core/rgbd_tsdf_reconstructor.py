@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 import cv2
 import numpy as np
 import open3d as o3d
+from config import Config
 
 
 @dataclass
@@ -26,15 +27,15 @@ class RGBDTSDFReconstructor:
 
     def __init__(
         self,
-        voxel_length: float = 0.035,
-        sdf_trunc: float = 0.12,
-        depth_scale: float = 1000.0,
-        depth_trunc: float = 6.0,
+        voxel_length: float = None,
+        sdf_trunc: float = None,
+        depth_scale: float = None,
+        depth_trunc: float = None,
     ):
-        self.voxel_length = voxel_length
-        self.sdf_trunc = sdf_trunc
-        self.depth_scale = depth_scale
-        self.depth_trunc = depth_trunc
+        self.voxel_length = Config.TSDF_VOXEL_LENGTH if voxel_length is None else voxel_length
+        self.sdf_trunc = Config.TSDF_SDF_TRUNC if sdf_trunc is None else sdf_trunc
+        self.depth_scale = Config.TSDF_DEPTH_SCALE if depth_scale is None else depth_scale
+        self.depth_trunc = Config.TSDF_DEPTH_TRUNC if depth_trunc is None else depth_trunc
 
     def reconstruct_from_project(self, project_dir: str) -> TSDFReconstructionResult:
         project = Path(project_dir)

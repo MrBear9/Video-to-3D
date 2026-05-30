@@ -54,17 +54,29 @@ class ModelIO:
                 model.export(str(path_obj))
                 return True
             elif isinstance(model, o3d.geometry.TriangleMesh):
+                if format in ['.obj', '.stl', '.glb', '.gltf']:
+                    model.compute_vertex_normals()
                 return bool(o3d.io.write_triangle_mesh(str(path_obj), model))
             elif isinstance(model, o3d.geometry.PointCloud):
-                o3d.io.write_point_cloud(str(path_obj), model)
-                return True
+                if format == '.ply':
+                    return bool(o3d.io.write_point_cloud(str(path_obj), model))
+                mesh = ModelIO._point_cloud_to_mesh(model)
+                if mesh is None or len(mesh.triangles) == 0:
+                    raise TypeError('Point cloud export to mesh failed; please export point clouds as PLY')
+                return bool(o3d.io.write_triangle_mesh(str(path_obj), mesh))
             elif hasattr(model, 'points') and hasattr(model, 'colors'):
                 points = np.asarray(model.points)
                 colors = np.asarray(model.colors)
                 if path_obj.suffix.lower() == '.ply':
                     ModelIO._write_simple_point_cloud_ply(path_obj, points, colors)
                     return True
-                raise TypeError('Simple point clouds can currently be exported as PLY')
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(points)
+                pcd.colors = o3d.utility.Vector3dVector(colors[:, :3])
+                mesh = ModelIO._point_cloud_to_mesh(pcd)
+                if mesh is None or len(mesh.triangles) == 0:
+                    raise TypeError('Simple point clouds can currently be exported as PLY')
+                return bool(o3d.io.write_triangle_mesh(str(path_obj), mesh))
             else:
                 raise TypeError(f"Unsupported model type: {type(model)}")
         except Exception as e:
@@ -132,3 +144,49 @@ class ModelIO:
             f.write('end_header\n')
             for p, c in zip(points, rgb):
                 f.write(f'{p[0]:.6f} {p[1]:.6f} {p[2]:.6f} {c[0]} {c[1]} {c[2]}\n')
+
+    @staticmethod
+    def _point_cloud_to_mesh(pcd: o3d.geometry.PointCloud):
+        if len(pcd.points) < 4:
+            return None
+        working = o3d.geometry.PointCloud(pcd)
+        if not working.has_normals():
+            working.estimate_normals(
+                search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                    radius=Config.EXPORT_NORMAL_RADIUS,
+                    max_nn=Config.EXPORT_NORMAL_MAX_NN
+                )
+            )
+            try:
+                working.orient_normals_consistent_tangent_plane(30)
+            except Exception:
+                pass
+
+        distances = working.compute_nearest_neighbor_distance()
+        avg_dist = float(np.mean(distances)) if distances else 0.03
+        radii = [avg_dist * 1.5, avg_dist * 3.0, avg_dist * 5.0]
+        try:
+            mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
+                working,
+                o3d.utility.DoubleVector(radii)
+            )
+            if len(mesh.triangles) > 0:
+                mesh.compute_vertex_normals()
+                return mesh
+        except Exception:
+            pass
+
+        try:
+            mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                working,
+                depth=Config.EXPORT_POISSON_DEPTH
+            )
+            if len(mesh.triangles) > 0:
+                density = np.asarray(densities)
+                keep = density > np.quantile(density, 0.05)
+                mesh.remove_vertices_by_mask(~keep)
+                mesh.compute_vertex_normals()
+                return mesh
+        except Exception:
+            pass
+        return None

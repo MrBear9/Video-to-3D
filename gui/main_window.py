@@ -20,6 +20,7 @@ from core.lighting_system import LightingSystem
 from core.instance_detector import InstanceDetector
 from core.instance_segmentor import InstanceSegmentor
 from utils.logger import app_logger
+from config import Config
 
 
 class MainWindow(QMainWindow):
@@ -245,10 +246,14 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
 
             self.control_panel.update_progress(30)
-            points = self._points_for_analysis(self.current_model)
-
-            self.control_panel.update_progress(60)
-            self.detections = self.instance_detector.detect(points)
+            s3dis_objects = self._load_s3dis_segments_for_current_video()
+            if s3dis_objects:
+                self.detections = s3dis_objects
+                self.control_panel.update_progress(100)
+            else:
+                points = self._points_for_analysis(self.current_model)
+                self.control_panel.update_progress(60)
+                self.detections = self.instance_detector.detect(points)
             self.control_panel.update_progress(100)
 
             self.scene_tree.clear()
@@ -256,8 +261,9 @@ class MainWindow(QMainWindow):
             self.viewport.select_object(None)
             self.scene_tree.add_item('Reconstructed_Scene', 'mesh', self.current_model)
             for i, det in enumerate(self.detections):
+                label = getattr(det, 'class_name', None) or getattr(det, 'semantic_label', 'object')
                 self.scene_tree.add_item(
-                    f'{det.class_name}_{i}',
+                    f'{label}_{i}',
                     'detection',
                     det
                 )
@@ -560,8 +566,10 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def _apply_material_to_selected_object(self, mesh, selection, material):
-        mat = self.material_editor.MATERIALS[material]
+        color = self._display_material_color(material)
         new_mesh = mesh.copy() if hasattr(mesh, 'copy') else mesh
+        if self._is_open3d_mesh(mesh):
+            new_mesh = self._copy_open3d_mesh(mesh)
 
         vertices = self._mesh_vertices(new_mesh)
         if len(vertices) == 0:
@@ -569,6 +577,8 @@ class MainWindow(QMainWindow):
 
         selected_points = self._selection_points(selection)
         if selected_points is None or len(selected_points) == 0:
+            if self._is_open3d_mesh(new_mesh):
+                return self._apply_material_to_entire_open3d_mesh(new_mesh, material)
             return self.material_editor.apply_material(new_mesh, material)
 
         if hasattr(selection, 'bbox'):
@@ -583,25 +593,39 @@ class MainWindow(QMainWindow):
             mask = np.all((vertices >= min_coords - padding) & (vertices <= max_coords + padding), axis=1)
 
         if not mask.any():
+            if self._is_open3d_mesh(new_mesh):
+                return self._apply_material_to_entire_open3d_mesh(new_mesh, material)
             return self.material_editor.apply_material(new_mesh, material)
 
         colors = self._mesh_vertex_colors(new_mesh, len(vertices))
-        colors[mask, :3] = np.array(mat.albedo) * 255
-        colors[mask, 3] = int((1.0 - mat.transparency) * 255)
+        colors[mask, :3] = np.array(color) * 255
+        colors[mask, 3] = 255
         self._set_mesh_vertex_colors(new_mesh, colors)
         return new_mesh
 
     def _apply_material_to_entire_open3d_mesh(self, mesh, material):
-        mat = self.material_editor.MATERIALS[material]
+        color = self._display_material_color(material)
         new_mesh = self._copy_open3d_mesh(mesh)
         vertices = self._mesh_vertices(new_mesh)
         if vertices is None or len(vertices) == 0:
             return new_mesh
         colors = np.ones((len(vertices), 4), dtype=np.uint8) * 255
-        colors[:, :3] = (np.array(mat.albedo) * 255).astype(np.uint8)
-        colors[:, 3] = int((1.0 - mat.transparency) * 255)
+        colors[:, :3] = (np.array(color) * 255).astype(np.uint8)
+        colors[:, 3] = 255
         self._set_mesh_vertex_colors(new_mesh, colors)
         return new_mesh
+
+    def _display_material_color(self, material):
+        demo_colors = {
+            'metal': (0.92, 0.78, 0.28),
+            'wood': (0.58, 0.32, 0.14),
+            'plastic': (0.92, 0.18, 0.18),
+            'glass': (0.22, 0.72, 0.95),
+            'stone': (0.48, 0.50, 0.54),
+            'ceramic': (0.96, 0.96, 0.86),
+            'fabric': (0.28, 0.36, 0.88),
+        }
+        return demo_colors.get(material, self.material_editor.MATERIALS[material].albedo)
 
     def _copy_open3d_mesh(self, mesh):
         import open3d as o3d
@@ -668,7 +692,8 @@ class MainWindow(QMainWindow):
             return np.asarray(model.vertices)
         return None
 
-    def _points_for_analysis(self, model, sample_count=20000):
+    def _points_for_analysis(self, model, sample_count=None):
+        sample_count = Config.ANALYSIS_SAMPLE_POINTS if sample_count is None else sample_count
         try:
             import open3d as o3d
             if isinstance(model, o3d.geometry.PointCloud):

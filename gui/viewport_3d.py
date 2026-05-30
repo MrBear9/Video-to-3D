@@ -4,6 +4,7 @@ from PyQt5.QtGui import QMouseEvent, QWheelEvent
 import OpenGL.GL as gl
 import numpy as np
 import open3d as o3d
+from config import Config
 
 
 class Viewport3D(QOpenGLWidget):
@@ -20,6 +21,8 @@ class Viewport3D(QOpenGLWidget):
         self.last_mouse_pos = None
         self._mouse_action = None
         self.selected_object = None
+        self.lighting_mode = Config.LIGHTING_MODE
+        self.lighting_intensity = Config.LIGHTING_INTENSITY
         self.setMinimumSize(400, 400)
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -27,13 +30,19 @@ class Viewport3D(QOpenGLWidget):
         self.vis.create_window(visible=False)
 
     def initializeGL(self):
-        gl.glClearColor(0.12, 0.12, 0.16, 1.0)
+        gl.glClearColor(*Config.VIEWPORT_BACKGROUND)
         gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glDisable(gl.GL_CULL_FACE)
         gl.glEnable(gl.GL_LIGHTING)
         gl.glEnable(gl.GL_LIGHT0)
-        gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [5.0, 10.0, 5.0, 1.0])
-        gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, [0.9, 0.9, 0.9, 1.0])
-        gl.glLightfv(gl.GL_LIGHT0, gl.GL_AMBIENT, [0.2, 0.2, 0.2, 1.0])
+        gl.glEnable(gl.GL_LIGHT1)
+        gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [0.0, 0.0, 1.0, 0.0])
+        gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, [0.75, 0.75, 0.75, 1.0])
+        gl.glLightfv(gl.GL_LIGHT0, gl.GL_AMBIENT, [0.45, 0.45, 0.45, 1.0])
+        gl.glLightfv(gl.GL_LIGHT1, gl.GL_POSITION, [0.0, 0.0, -1.0, 0.0])
+        gl.glLightfv(gl.GL_LIGHT1, gl.GL_DIFFUSE, [0.35, 0.35, 0.35, 1.0])
+        gl.glLightModelfv(gl.GL_LIGHT_MODEL_AMBIENT, [0.55, 0.55, 0.55, 1.0])
+        gl.glLightModeli(gl.GL_LIGHT_MODEL_TWO_SIDE, gl.GL_TRUE)
         gl.glEnable(gl.GL_COLOR_MATERIAL)
         gl.glColorMaterial(gl.GL_FRONT_AND_BACK, gl.GL_DIFFUSE)
 
@@ -58,6 +67,8 @@ class Viewport3D(QOpenGLWidget):
         gl.glRotatef(self.rotation_x, 1, 0, 0)
         gl.glRotatef(self.rotation_y, 0, 1, 0)
         gl.glTranslatef(self.pan_x, self.pan_y, 0)
+        gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [0.0, 0.0, 1.0, 0.0])
+        gl.glLightfv(gl.GL_LIGHT1, gl.GL_POSITION, [0.0, 0.0, -1.0, 0.0])
 
     def draw_models(self):
         for model in self.models:
@@ -66,6 +77,8 @@ class Viewport3D(QOpenGLWidget):
     def draw_model(self, model):
         if isinstance(model, o3d.geometry.PointCloud):
             self.draw_point_cloud(model)
+        elif isinstance(model, o3d.geometry.TriangleMesh):
+            self.draw_mesh(model)
         elif hasattr(model, 'points') and not hasattr(model, 'faces'):
             self.draw_simple_point_cloud(model)
         elif hasattr(model, 'vertices') and hasattr(model, 'faces'):
@@ -73,30 +86,44 @@ class Viewport3D(QOpenGLWidget):
         self.draw_selection_overlay(model)
 
     def draw_point_cloud(self, pcd):
-        points = np.asarray(pcd.points)
-        colors = np.asarray(pcd.colors) if pcd.has_colors() else np.ones_like(points) * 0.7
+        points = np.asarray(pcd.points, dtype=np.float32)
+        colors = self._normalize_colors(
+            np.asarray(pcd.colors) if pcd.has_colors() else None,
+            len(points),
+            Config.DEFAULT_POINT_COLOR,
+        )
+        colors = self._apply_display_lighting(colors)
 
+        gl.glDisable(gl.GL_LIGHTING)
         gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
         gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-        gl.glVertexPointer(3, gl.GL_DOUBLE, 0, points)
-        gl.glColorPointer(3, gl.GL_DOUBLE, 0, colors)
-        gl.glPointSize(2.0)
+        gl.glVertexPointer(3, gl.GL_FLOAT, 0, points)
+        gl.glColorPointer(3, gl.GL_FLOAT, 0, colors)
+        gl.glPointSize(float(Config.POINT_SIZE))
         gl.glDrawArrays(gl.GL_POINTS, 0, len(points))
         gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
         gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+        gl.glEnable(gl.GL_LIGHTING)
 
     def draw_simple_point_cloud(self, pcd):
-        points = np.asarray(pcd.points)
-        colors = np.asarray(pcd.colors) if hasattr(pcd, 'colors') else np.ones_like(points) * 0.7
+        points = np.asarray(pcd.points, dtype=np.float32)
+        colors = self._normalize_colors(
+            np.asarray(pcd.colors) if hasattr(pcd, 'colors') else None,
+            len(points),
+            Config.DEFAULT_POINT_COLOR,
+        )
+        colors = self._apply_display_lighting(colors)
 
+        gl.glDisable(gl.GL_LIGHTING)
         gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
         gl.glEnableClientState(gl.GL_COLOR_ARRAY)
-        gl.glVertexPointer(3, gl.GL_FLOAT, 0, points.astype(np.float32))
-        gl.glColorPointer(3, gl.GL_FLOAT, 0, colors.astype(np.float32))
-        gl.glPointSize(2.5)
+        gl.glVertexPointer(3, gl.GL_FLOAT, 0, points)
+        gl.glColorPointer(3, gl.GL_FLOAT, 0, colors)
+        gl.glPointSize(float(Config.SIMPLE_POINT_SIZE))
         gl.glDrawArrays(gl.GL_POINTS, 0, len(points))
         gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
         gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+        gl.glEnable(gl.GL_LIGHTING)
 
     def draw_mesh(self, mesh):
         try:
@@ -110,16 +137,17 @@ class Viewport3D(QOpenGLWidget):
             faces = mesh.faces
 
             if hasattr(mesh.visual, 'vertex_colors'):
-                colors = mesh.visual.vertex_colors[:, :3] / 255.0
+                colors = self._normalize_colors(mesh.visual.vertex_colors[:, :3], len(vertices), Config.DEFAULT_MESH_COLOR)
             else:
-                colors = np.ones_like(vertices) * 0.7
+                colors = self._normalize_colors(None, len(vertices), Config.DEFAULT_MESH_COLOR)
 
             vertices = vertices.astype(np.float32)
             colors = colors.astype(np.float32)
 
             vertex_array = vertices[faces].reshape(-1, 3)
-            color_array = colors[faces].reshape(-1, 3)
+            color_array = self._apply_display_lighting(colors)[faces].reshape(-1, 3)
 
+            gl.glDisable(gl.GL_LIGHTING)
             gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
             gl.glEnableClientState(gl.GL_COLOR_ARRAY)
             gl.glVertexPointer(3, gl.GL_FLOAT, 0, vertex_array)
@@ -127,18 +155,22 @@ class Viewport3D(QOpenGLWidget):
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, vertex_array.shape[0])
             gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
             gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+            if Config.MESH_SHOW_WIREFRAME_OVERLAY:
+                self._draw_wireframe(vertex_array)
+            gl.glEnable(gl.GL_LIGHTING)
         elif isinstance(mesh, o3d.geometry.TriangleMesh):
             vertices = np.asarray(mesh.vertices).astype(np.float32)
             triangles = np.asarray(mesh.triangles)
 
             if mesh.has_vertex_colors():
-                colors = np.asarray(mesh.vertex_colors).astype(np.float32)
+                colors = self._normalize_colors(np.asarray(mesh.vertex_colors), len(vertices), Config.DEFAULT_MESH_COLOR)
             else:
-                colors = np.ones_like(vertices) * 0.7
+                colors = self._normalize_colors(None, len(vertices), Config.DEFAULT_MESH_COLOR)
 
             vertex_array = vertices[triangles].reshape(-1, 3)
-            color_array = colors[triangles].reshape(-1, 3)
+            color_array = self._apply_display_lighting(colors)[triangles].reshape(-1, 3)
 
+            gl.glDisable(gl.GL_LIGHTING)
             gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
             gl.glEnableClientState(gl.GL_COLOR_ARRAY)
             gl.glVertexPointer(3, gl.GL_FLOAT, 0, vertex_array)
@@ -146,6 +178,57 @@ class Viewport3D(QOpenGLWidget):
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, vertex_array.shape[0])
             gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
             gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+            if Config.MESH_SHOW_WIREFRAME_OVERLAY:
+                self._draw_wireframe(vertex_array)
+            gl.glEnable(gl.GL_LIGHTING)
+
+    def _normalize_colors(self, colors, count, fallback):
+        if colors is None or len(colors) != count:
+            arr = np.tile(np.asarray(fallback, dtype=np.float32), (count, 1))
+        else:
+            arr = np.asarray(colors, dtype=np.float32)
+            if arr.ndim == 1:
+                arr = np.tile(arr[:3], (count, 1))
+            arr = arr[:, :3]
+            if arr.size and arr.max() > 1.0:
+                arr = arr / 255.0
+            arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+            arr = np.clip(arr, 0.0, 1.0)
+            brightness = arr.mean(axis=1)
+            dark = brightness < Config.MIN_COLOR_BRIGHTNESS
+            if np.any(dark):
+                arr[dark] = np.asarray(fallback, dtype=np.float32)
+        return np.ascontiguousarray(arr.astype(np.float32))
+
+    def _apply_display_lighting(self, colors):
+        tint = np.asarray(Config.LIGHTING_TINTS.get(self.lighting_mode, (1.0, 1.0, 1.0)), dtype=np.float32)
+        intensity = float(np.clip(self.lighting_intensity, 0.15, 1.6))
+        if self.lighting_mode == 'ambient':
+            factor = 0.75 + intensity * 0.35
+        elif self.lighting_mode == 'directional':
+            factor = 0.55 + intensity * 0.65
+        elif self.lighting_mode == 'point':
+            factor = 0.45 + intensity * 0.85
+        elif self.lighting_mode == 'spot':
+            factor = 0.35 + intensity * 1.05
+        else:
+            factor = 1.0
+        return np.ascontiguousarray(np.clip(colors * tint * factor, 0.0, 1.0).astype(np.float32))
+
+    def _draw_wireframe(self, vertex_array):
+        if len(vertex_array) == 0:
+            return
+        gl.glDisable(gl.GL_LIGHTING)
+        gl.glDisableClientState(gl.GL_COLOR_ARRAY)
+        gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
+        gl.glColor3f(*Config.MESH_WIREFRAME_COLOR)
+        gl.glLineWidth(float(Config.MESH_WIREFRAME_WIDTH))
+        gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glVertexPointer(3, gl.GL_FLOAT, 0, vertex_array)
+        gl.glDrawArrays(gl.GL_TRIANGLES, 0, vertex_array.shape[0])
+        gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
+        gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+        gl.glLineWidth(1.0)
 
     def draw_selection_overlay(self, model):
         if self.selected_object is None:
@@ -166,10 +249,10 @@ class Viewport3D(QOpenGLWidget):
         gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
         gl.glVertexPointer(3, gl.GL_FLOAT, 0, points.astype(np.float32))
         gl.glColor3f(1.0, 0.92, 0.05)
-        gl.glPointSize(5.0)
+        gl.glPointSize(float(Config.SELECTION_POINT_SIZE))
         gl.glDrawArrays(gl.GL_POINTS, 0, len(points))
         gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
-        gl.glPointSize(2.0)
+        gl.glPointSize(float(Config.POINT_SIZE))
         gl.glEnable(gl.GL_LIGHTING)
 
     def _selection_points(self, data):
@@ -325,34 +408,35 @@ class Viewport3D(QOpenGLWidget):
         self.update()
 
     def apply_lighting(self, light_type='ambient', intensity=0.5):
+        self.lighting_mode = light_type
+        self.lighting_intensity = intensity
         self.makeCurrent()
         if light_type == 'ambient':
-            gl.glDisable(gl.GL_LIGHT0)
-            gl.glDisable(gl.GL_LIGHT1)
-            ambient = [intensity * 0.6, intensity * 0.6, intensity * 0.6, 1.0]
-            diffuse = [intensity * 0.8, intensity * 0.8, intensity * 0.8, 1.0]
+            gl.glEnable(gl.GL_LIGHT0)
+            gl.glEnable(gl.GL_LIGHT1)
+            ambient = [max(intensity, 0.35)] * 3 + [1.0]
+            diffuse = [max(intensity * 0.5, 0.25)] * 3 + [1.0]
             gl.glLightfv(gl.GL_LIGHT0, gl.GL_AMBIENT, ambient)
             gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, diffuse)
-            gl.glEnable(gl.GL_LIGHT0)
         elif light_type == 'directional':
             gl.glEnable(gl.GL_LIGHT0)
             gl.glEnable(gl.GL_LIGHT1)
-            gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [1.0, 2.0, 1.0, 1.0])
-            gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, [intensity, intensity, intensity, 1.0])
-            gl.glLightfv(gl.GL_LIGHT1, gl.GL_POSITION, [-1.0, -1.0, -0.5, 1.0])
-            gl.glLightfv(gl.GL_LIGHT1, gl.GL_DIFFUSE, [intensity*0.3, intensity*0.3, intensity*0.3, 1.0])
+            gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [0.0, 0.0, 1.0, 0.0])
+            gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, [max(intensity, 0.35)] * 3 + [1.0])
+            gl.glLightfv(gl.GL_LIGHT1, gl.GL_POSITION, [0.0, 0.0, -1.0, 0.0])
+            gl.glLightfv(gl.GL_LIGHT1, gl.GL_DIFFUSE, [max(intensity * 0.45, 0.2)] * 3 + [1.0])
         elif light_type == 'point':
             gl.glEnable(gl.GL_LIGHT0)
-            gl.glDisable(gl.GL_LIGHT1)
-            gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [0.0, 3.0, 2.0, 1.0])
-            gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, [intensity, intensity, intensity, 1.0])
+            gl.glEnable(gl.GL_LIGHT1)
+            gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [0.0, 0.0, 1.0, 0.0])
+            gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, [max(intensity, 0.35)] * 3 + [1.0])
         elif light_type == 'spot':
             gl.glEnable(gl.GL_LIGHT0)
-            gl.glDisable(gl.GL_LIGHT1)
-            gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [0.0, 2.0, 5.0, 1.0])
+            gl.glEnable(gl.GL_LIGHT1)
+            gl.glLightfv(gl.GL_LIGHT0, gl.GL_POSITION, [0.0, 0.0, 1.0, 0.0])
             gl.glLightfv(gl.GL_LIGHT0, gl.GL_SPOT_DIRECTION, [0.0, -0.3, -1.0])
             gl.glLightf(gl.GL_LIGHT0, gl.GL_SPOT_CUTOFF, 30.0)
-            gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, [intensity, intensity, intensity, 1.0])
+            gl.glLightfv(gl.GL_LIGHT0, gl.GL_DIFFUSE, [max(intensity, 0.35)] * 3 + [1.0])
         self.doneCurrent()
 
     def mousePressEvent(self, event: QMouseEvent):
