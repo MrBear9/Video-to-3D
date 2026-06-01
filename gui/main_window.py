@@ -406,7 +406,14 @@ class MainWindow(QMainWindow):
             QApplication.processEvents()
 
             source = self.current_model
-            if self.selected_scene_object is not None and self._mesh_vertices(source) is not None:
+            if self._is_open3d_point_cloud(source):
+                if self.selected_scene_object is not None:
+                    new_model = self._apply_material_to_selected_point_cloud(
+                        source, self.selected_scene_object, material
+                    )
+                else:
+                    new_model = self._apply_material_to_entire_open3d_point_cloud(source, material)
+            elif self.selected_scene_object is not None and self._mesh_vertices(source) is not None:
                 new_model = self._apply_material_to_selected_object(source, self.selected_scene_object, material)
             elif isinstance(source, trimesh.Trimesh):
                 new_model = self.material_editor.apply_material(source, material)
@@ -615,6 +622,45 @@ class MainWindow(QMainWindow):
         self._set_mesh_vertex_colors(new_mesh, colors)
         return new_mesh
 
+    def _apply_material_to_selected_point_cloud(self, point_cloud, selection, material):
+        color = self._display_material_color(material)
+        new_cloud = self._copy_open3d_point_cloud(point_cloud)
+        points = np.asarray(new_cloud.points)
+        if len(points) == 0:
+            return new_cloud
+
+        selected_points = self._selection_points(selection)
+        if selected_points is None or len(selected_points) == 0:
+            return self._apply_material_to_entire_open3d_point_cloud(new_cloud, material)
+
+        if hasattr(selection, 'bbox'):
+            bbox = np.asarray(selection.bbox)
+            min_coords = bbox.min(axis=0)
+            max_coords = bbox.max(axis=0)
+        else:
+            min_coords = selected_points.min(axis=0)
+            max_coords = selected_points.max(axis=0)
+
+        padding = max(np.linalg.norm(max_coords - min_coords) * 0.03, 1e-3)
+        mask = np.all((points >= min_coords - padding) & (points <= max_coords + padding), axis=1)
+        if not mask.any():
+            return self._apply_material_to_entire_open3d_point_cloud(new_cloud, material)
+
+        colors = self._point_cloud_colors(new_cloud, len(points))
+        colors[mask] = np.array(color, dtype=np.float64)
+        self._set_point_cloud_colors(new_cloud, colors)
+        return new_cloud
+
+    def _apply_material_to_entire_open3d_point_cloud(self, point_cloud, material):
+        color = self._display_material_color(material)
+        new_cloud = self._copy_open3d_point_cloud(point_cloud)
+        points = np.asarray(new_cloud.points)
+        if len(points) == 0:
+            return new_cloud
+        colors = np.tile(np.array(color, dtype=np.float64), (len(points), 1))
+        self._set_point_cloud_colors(new_cloud, colors)
+        return new_cloud
+
     def _display_material_color(self, material):
         demo_colors = {
             'metal': (0.92, 0.78, 0.28),
@@ -625,7 +671,9 @@ class MainWindow(QMainWindow):
             'ceramic': (0.96, 0.96, 0.86),
             'fabric': (0.28, 0.36, 0.88),
         }
-        return demo_colors.get(material, self.material_editor.MATERIALS[material].albedo)
+        if material in demo_colors:
+            return demo_colors[material]
+        return self.material_editor.MATERIALS[material].albedo
 
     def _copy_open3d_mesh(self, mesh):
         import open3d as o3d
@@ -637,6 +685,16 @@ class MainWindow(QMainWindow):
         if mesh.has_vertex_normals():
             new_mesh.vertex_normals = o3d.utility.Vector3dVector(np.asarray(mesh.vertex_normals))
         return new_mesh
+
+    def _copy_open3d_point_cloud(self, point_cloud):
+        import open3d as o3d
+        new_cloud = o3d.geometry.PointCloud()
+        new_cloud.points = o3d.utility.Vector3dVector(np.asarray(point_cloud.points))
+        if point_cloud.has_colors():
+            new_cloud.colors = o3d.utility.Vector3dVector(np.asarray(point_cloud.colors))
+        if point_cloud.has_normals():
+            new_cloud.normals = o3d.utility.Vector3dVector(np.asarray(point_cloud.normals))
+        return new_cloud
 
     def _selection_points(self, selection):
         if hasattr(selection, 'points'):
@@ -678,10 +736,28 @@ class MainWindow(QMainWindow):
         elif hasattr(mesh, 'visual'):
             mesh.visual.vertex_colors = colors.astype(np.uint8)
 
+    def _point_cloud_colors(self, point_cloud, count):
+        if point_cloud.has_colors():
+            colors = np.asarray(point_cloud.colors)
+            if len(colors) == count:
+                return np.clip(colors, 0.0, 1.0).astype(np.float64).copy()
+        return np.ones((count, 3), dtype=np.float64) * 0.72
+
+    def _set_point_cloud_colors(self, point_cloud, colors):
+        import open3d as o3d
+        point_cloud.colors = o3d.utility.Vector3dVector(np.clip(colors, 0.0, 1.0))
+
     def _is_open3d_mesh(self, model):
         try:
             import open3d as o3d
             return isinstance(model, o3d.geometry.TriangleMesh)
+        except Exception:
+            return False
+
+    def _is_open3d_point_cloud(self, model):
+        try:
+            import open3d as o3d
+            return isinstance(model, o3d.geometry.PointCloud)
         except Exception:
             return False
 
